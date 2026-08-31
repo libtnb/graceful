@@ -38,7 +38,7 @@ SIGHUP via [tableflip](https://github.com/cloudflare/tableflip).
 go get github.com/libtnb/graceful
 ```
 
-Requires Go 1.25+.
+Requires Go 1.27+.
 
 ## Quick start
 
