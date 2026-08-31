@@ -5,10 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"os"
 	"runtime"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -28,7 +26,13 @@ func (r *recorder) stop(name string) func(context.Context) error {
 	}
 }
 
-// blockUntilStopped is a start func that blocks until its stop releases it.
+func (r *recorder) stopped() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.order...)
+}
+
+// blocker is a start func that blocks until its stop releases it.
 type blocker struct{ done chan struct{} }
 
 func newBlocker() *blocker { return &blocker{done: make(chan struct{})} }
@@ -36,6 +40,17 @@ func newBlocker() *blocker { return &blocker{done: make(chan struct{})} }
 func (b *blocker) start() error { <-b.done; return nil }
 
 func (b *blocker) stop(context.Context) error { close(b.done); return nil }
+
+// cancelSoon returns a context that cancels itself shortly after Run starts.
+func cancelSoon(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	return ctx
+}
 
 func TestRun_FirstFailureStopsAll(t *testing.T) {
 	rec := &recorder{}
@@ -48,19 +63,17 @@ func TestRun_FirstFailureStopsAll(t *testing.T) {
 	})
 	g.Add("broken", func() error { return errors.New("boom") }, rec.stop("broken"))
 
-	err := g.Run()
+	err := g.Run(context.Background())
 
 	if err == nil || err.Error() != "broken: boom" {
 		t.Fatalf("Run should surface the failing component, got %v", err)
 	}
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if len(rec.order) != 2 || rec.order[0] != "broken" || rec.order[1] != "steady" {
-		t.Fatalf("all components should stop in reverse order, got %v", rec.order)
+	if order := rec.stopped(); len(order) != 2 || order[0] != "broken" || order[1] != "steady" {
+		t.Fatalf("all components should stop in reverse order, got %v", order)
 	}
 }
 
-func TestRun_SignalDrainsInReverseOrder(t *testing.T) {
+func TestRun_CancelDrainsInReverseOrder(t *testing.T) {
 	rec := &recorder{}
 	b1, b2 := newBlocker(), newBlocker()
 
@@ -74,18 +87,26 @@ func TestRun_SignalDrainsInReverseOrder(t *testing.T) {
 		return rec.stop("second")(ctx)
 	})
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-	}()
-
-	if err := g.Run(); err != nil {
-		t.Fatalf("signal shutdown should return nil, got %v", err)
+	if err := g.Run(cancelSoon(t)); err != nil {
+		t.Fatalf("requested shutdown should return nil, got %v", err)
 	}
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if len(rec.order) != 2 || rec.order[0] != "second" || rec.order[1] != "first" {
-		t.Fatalf("stop order should be reverse of registration, got %v", rec.order)
+	if order := rec.stopped(); len(order) != 2 || order[0] != "second" || order[1] != "first" {
+		t.Fatalf("stop order should be reverse of registration, got %v", order)
+	}
+}
+
+func TestRun_DrainFailureIsReturned(t *testing.T) {
+	errStop := errors.New("stop exploded")
+	b := newBlocker()
+
+	g := New()
+	g.Add("grumpy", b.start, func(ctx context.Context) error {
+		_ = b.stop(ctx)
+		return errStop
+	})
+
+	if err := g.Run(cancelSoon(t)); !errors.Is(err, errStop) {
+		t.Fatalf("drain failures should surface from Run, got %v", err)
 	}
 }
 
@@ -97,12 +118,7 @@ func TestListen_ServesAndShutsDown(t *testing.T) {
 	g := New()
 	g.Listen("http", "127.0.0.1:0", srv)
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-	}()
-
-	if err := g.Run(); err != nil {
+	if err := g.Run(cancelSoon(t)); err != nil {
 		t.Fatalf("clean listener shutdown should return nil, got %v", err)
 	}
 }
@@ -118,25 +134,21 @@ func TestListen_BadAddressDrainsStarted(t *testing.T) {
 	})
 	g.Listen("http", "256.256.256.256:0", &http.Server{})
 
-	err := g.Run()
+	err := g.Run(context.Background())
 
 	if err == nil {
 		t.Fatal("Run should fail on an unbindable address")
 	}
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if len(rec.order) != 1 || rec.order[0] != "steady" {
-		t.Fatalf("already-started components should be drained, got %v", rec.order)
+	if order := rec.stopped(); len(order) != 1 || order[0] != "steady" {
+		t.Fatalf("already-started components should be drained, got %v", order)
 	}
 }
 
 func TestServerFailurePropagates(t *testing.T) {
-	// grab a port and hold it so the group's listener can't bind... instead,
-	// simpler: a Server whose Serve fails immediately.
 	g := New()
 	g.Listen("http", "127.0.0.1:0", failingServer{})
 
-	err := g.Run()
+	err := g.Run(context.Background())
 
 	if err == nil || !errors.Is(err, errServe) {
 		t.Fatalf("serve failure should surface from Run, got %v", err)
@@ -159,12 +171,7 @@ func TestRun_WithUpgrade(t *testing.T) {
 	g := New(WithUpgrade())
 	g.Listen("http", "127.0.0.1:0", &http.Server{})
 
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-	}()
-
-	if err := g.Run(); err != nil {
+	if err := g.Run(cancelSoon(t)); err != nil {
 		t.Fatalf("upgrade-enabled group should shut down cleanly, got %v", err)
 	}
 }
