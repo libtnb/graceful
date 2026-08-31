@@ -33,11 +33,10 @@ func (g *Group) Run(ctx context.Context) error {
 	if err == nil {
 		err = up.Ready()
 	}
-	if err != nil {
-		return errors.Join(err, g.drain(started))
+	if err == nil {
+		err = g.await(ctx, up, errCh)
 	}
-
-	return errors.Join(g.await(ctx, up, errCh), g.drain(started))
+	return errors.Join(err, g.drain(started))
 }
 
 // start launches the entries and returns the ones that must be drained; a

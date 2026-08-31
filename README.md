@@ -8,10 +8,9 @@
 [![Stars](https://img.shields.io/github/stars/libtnb/graceful?style=flat)](https://github.com/libtnb/graceful)
 [![License](https://img.shields.io/github/license/libtnb/graceful)](https://opensource.org/license/MIT)
 
-Lifecycle orchestration for long-running Go components: start everything
-together, wait for the context to be cancelled or the first failure, drain
-everything in reverse order — with optional zero-downtime binary upgrades on
-SIGHUP via [tableflip](https://github.com/cloudflare/tableflip).
+Graceful shutdown for long-running Go components: one group, reverse-order
+draining, and optional zero-downtime upgrades on SIGHUP via
+[tableflip](https://github.com/cloudflare/tableflip).
 
 ## Features
 

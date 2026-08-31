@@ -44,11 +44,8 @@ func (b *blocker) stop(context.Context) error { close(b.done); return nil }
 // cancelSoon returns a context that cancels itself shortly after Run starts.
 func cancelSoon(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	t.Cleanup(cancel)
 	return ctx
 }
 

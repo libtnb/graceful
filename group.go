@@ -1,9 +1,6 @@
-// Package graceful orchestrates the lifecycle of long-running components.
-// A Group starts every registered component together, waits for the context
-// to be cancelled or the first failure, then drains everything in reverse
-// registration order within a bounded timeout. With WithUpgrade a SIGHUP
-// performs a zero-downtime binary upgrade via tableflip: listeners created
-// through Listen are inherited by the new process.
+// Package graceful runs long-running components as one group: started
+// together, drained in reverse order on shutdown, upgraded in place on
+// SIGHUP when WithUpgrade is enabled.
 package graceful
 
 import (
