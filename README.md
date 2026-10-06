@@ -101,13 +101,18 @@ binary upgrade that returns only once the new process is serving:
 [Service]
 Type=notify-reload
 NotifyAccess=all
+ExitType=cgroup
 ExecStart=/opt/app/app
 ```
 
 `NotifyAccess=all` is required: the upgraded process reports before systemd
-knows it as the main one. `WithUpgrade()` must be on, otherwise the SIGHUP
-systemd sends on reload just terminates the process. Replace the binary on
-disk before reloading; the child is re-executed from the same path.
+knows it as the main one. `ExitType=cgroup` keeps the unit running while the
+old process drains and exits; the new one claims `MAINPID=` only once it has
+been reparented to systemd, because a main process that is not systemd's own
+child cannot be waited for and a stop would escalate straight to SIGKILL.
+`WithUpgrade()` must be on, otherwise the SIGHUP systemd sends on reload just
+terminates the process. Replace the binary on disk before reloading; the
+child is re-executed from the same path.
 
 ## Design notes
 

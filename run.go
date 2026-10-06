@@ -31,13 +31,17 @@ func (g *Group) Run(ctx context.Context) error {
 	errCh := make(chan namedErr, len(g.entries))
 	started, err := g.start(up, errCh)
 	if err == nil {
-		// reported before Ready releases the parent, so the service manager
-		// follows an upgraded process before the old one may exit
+		// reported before Ready releases the parent, so a reload completes
+		// as soon as the upgraded process serves
 		g.notify.ready()
 		err = up.Ready()
 	}
 	if err == nil {
+		// an upgraded process claims the main role once the parent is gone
+		done := make(chan struct{})
+		go g.notify.adopt(done)
 		err = g.await(ctx, up, errCh)
+		close(done)
 	}
 	return errors.Join(err, g.drain(started))
 }

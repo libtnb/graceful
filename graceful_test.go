@@ -180,6 +180,8 @@ func TestRun_WithUpgrade(t *testing.T) {
 
 func TestRun_ReportsToServiceManager(t *testing.T) {
 	manager := notifySocket(t)
+	// the test runner stands in for the service manager that forked us
+	t.Setenv("MANAGERPID", strconv.Itoa(os.Getppid()))
 
 	g := New()
 	g.Listen("http", "127.0.0.1:0", &http.Server{})
@@ -192,6 +194,29 @@ func TestRun_ReportsToServiceManager(t *testing.T) {
 	for _, state := range want {
 		if got := readState(t, manager); got != state {
 			t.Fatalf("service manager should receive %q, got %q", state, got)
+		}
+	}
+}
+
+func TestRun_LeavesMainPIDToTheParentUntilAdopted(t *testing.T) {
+	manager := notifySocket(t)
+	// a manager that is not our parent: the case of a process an upgrade spawned
+	t.Setenv("MANAGERPID", "1")
+	if os.Getppid() == 1 {
+		t.Skip("the test process is a child of pid 1")
+	}
+
+	g := New()
+	g.Listen("http", "127.0.0.1:0", &http.Server{})
+
+	if err := g.Run(cancelSoon(t)); err != nil {
+		t.Fatalf("Run should shut down cleanly, got %v", err)
+	}
+
+	want := []string{"READY=1", "STOPPING=1"}
+	for _, state := range want {
+		if got := readState(t, manager); got != state {
+			t.Fatalf("an unadopted process must not claim the main role; service manager got %q, want %q", got, state)
 		}
 	}
 }
