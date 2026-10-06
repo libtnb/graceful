@@ -3,9 +3,14 @@ package graceful
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -171,4 +176,80 @@ func TestRun_WithUpgrade(t *testing.T) {
 	if err := g.Run(cancelSoon(t)); err != nil {
 		t.Fatalf("upgrade-enabled group should shut down cleanly, got %v", err)
 	}
+}
+
+func TestRun_ReportsToServiceManager(t *testing.T) {
+	manager := notifySocket(t)
+
+	g := New()
+	g.Listen("http", "127.0.0.1:0", &http.Server{})
+
+	if err := g.Run(cancelSoon(t)); err != nil {
+		t.Fatalf("Run should shut down cleanly, got %v", err)
+	}
+
+	want := []string{"MAINPID=" + strconv.Itoa(os.Getpid()) + "\nREADY=1", "STOPPING=1"}
+	for _, state := range want {
+		if got := readState(t, manager); got != state {
+			t.Fatalf("service manager should receive %q, got %q", state, got)
+		}
+	}
+}
+
+func TestRun_StaysSilentWithoutNotifySocket(t *testing.T) {
+	t.Setenv("NOTIFY_SOCKET", "")
+
+	g := New()
+	g.Listen("http", "127.0.0.1:0", &http.Server{})
+
+	if err := g.Run(cancelSoon(t)); err != nil {
+		t.Fatalf("Run should not care about a missing notify socket, got %v", err)
+	}
+}
+
+func TestNotifier_ReloadingCarriesMonotonicClock(t *testing.T) {
+	manager := notifySocket(t)
+
+	New().notify.reloading()
+
+	got := readState(t, manager)
+	if !strings.HasPrefix(got, "RELOADING=1\nMONOTONIC_USEC=") {
+		t.Fatalf("reload must open with the monotonic timestamp systemd pairs it with, got %q", got)
+	}
+	if _, err := strconv.ParseInt(strings.TrimPrefix(got, "RELOADING=1\nMONOTONIC_USEC="), 10, 64); err != nil {
+		t.Fatalf("MONOTONIC_USEC should be a decimal integer, got %q", got)
+	}
+}
+
+// notifySocket stands in for systemd's notification socket and points
+// NOTIFY_SOCKET at it for the rest of the test.
+func notifySocket(t *testing.T) *net.UnixConn {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix datagram sockets are not supported on windows")
+	}
+
+	// a short path: unix socket names are capped around a hundred bytes
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("graceful-%d.sock", time.Now().UnixNano()))
+	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		t.Fatalf("listen on %s: %v", path, err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = os.Remove(path)
+	})
+	t.Setenv("NOTIFY_SOCKET", path)
+	return conn
+}
+
+func readState(t *testing.T, conn *net.UnixConn) string {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("read notification: %v", err)
+	}
+	return string(buf[:n])
 }

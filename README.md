@@ -29,6 +29,10 @@ draining, and optional zero-downtime upgrades on SIGHUP via
 - **Zero-downtime upgrades.** `WithUpgrade()` makes SIGHUP re-exec the binary
   and hand off listeners; it silently falls back to plain listeners on
   Windows.
+- **systemd aware.** With `NOTIFY_SOCKET` set the group reports `READY=1`,
+  `RELOADING=1`, the upgraded process's `MAINPID=` and `STOPPING=1` by
+  itself, so a `Type=notify-reload` unit gets a synchronous, zero-downtime
+  `systemctl reload`.
 - **Structured logging** of every lifecycle event through `log/slog`.
 
 ## Install
@@ -82,6 +86,28 @@ so in-flight requests can still schedule work.
 | ctx cancelled (e.g. SIGINT/SIGTERM via `signal.NotifyContext`) | stop accepting, drain every component, return nil |
 | a `start` returns non-nil | drain every component, return `name: err` |
 | SIGHUP (with `WithUpgrade`) | re-exec the binary, hand listeners to the child, drain, return nil |
+
+## systemd
+
+Nothing to configure on the Go side: when systemd starts the process with
+`NOTIFY_SOCKET` in the environment, the group reports its state over it.
+`READY=1` goes out once every listener accepts, a SIGHUP upgrade is bracketed
+by `RELOADING=1` and the child's `MAINPID=` + `READY=1`, and a requested
+shutdown sends `STOPPING=1`. That is the whole contract of a
+`Type=notify-reload` unit, so `systemctl reload` becomes a zero-downtime
+binary upgrade that returns only once the new process is serving:
+
+```ini
+[Service]
+Type=notify-reload
+NotifyAccess=all
+ExecStart=/opt/app/app
+```
+
+`NotifyAccess=all` is required: the upgraded process reports before systemd
+knows it as the main one. `WithUpgrade()` must be on, otherwise the SIGHUP
+systemd sends on reload just terminates the process. Replace the binary on
+disk before reloading; the child is re-executed from the same path.
 
 ## Design notes
 

@@ -31,6 +31,9 @@ func (g *Group) Run(ctx context.Context) error {
 	errCh := make(chan namedErr, len(g.entries))
 	started, err := g.start(up, errCh)
 	if err == nil {
+		// reported before Ready releases the parent, so the service manager
+		// follows an upgraded process before the old one may exit
+		g.notify.ready()
 		err = up.Ready()
 	}
 	if err == nil {
@@ -86,16 +89,23 @@ func (g *Group) await(ctx context.Context, up upgrader, errCh <-chan namedErr) e
 		select {
 		case <-ctx.Done():
 			g.opts.log.Info("shutdown requested")
+			g.notify.stopping()
 			return nil
 		case <-hup:
 			g.opts.log.Info("upgrade requested")
+			g.notify.reloading()
 			if err := up.Upgrade(); err != nil {
 				g.opts.log.Error("upgrade failed", slog.Any("err", err))
+				// closes the reload cycle with this process still in charge
+				g.notify.ready()
 			}
 		case ne := <-errCh:
 			g.opts.log.Error("component failed", slog.String("name", ne.name), slog.Any("err", ne.err))
+			g.notify.stopping()
 			return fmt.Errorf("%s: %w", ne.name, ne.err)
 		case <-up.Exit():
+			// the child has reported itself as the main process; a STOPPING
+			// from here would read as the service going down
 			g.opts.log.Info("upgrade handed off, draining")
 			return nil
 		}

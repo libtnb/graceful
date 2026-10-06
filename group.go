@@ -56,6 +56,7 @@ type entry struct {
 type Group struct {
 	opts    options
 	entries []entry
+	notify  notifier
 }
 
 func New(opts ...Option) *Group {
@@ -66,7 +67,7 @@ func New(opts ...Option) *Group {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &Group{opts: o}
+	return &Group{opts: o, notify: newNotifier(o.log)}
 }
 
 // Add registers a component. start runs in a goroutine: it may block for the
