@@ -8,30 +8,26 @@ import (
 	"time"
 )
 
-// adoptInterval is how often an upgraded process checks whether the service
-// manager has become its parent.
+// adoptInterval is how often an upgraded process checks whether it has been adopted.
 const adoptInterval = 100 * time.Millisecond
 
-// notifier speaks the sd_notify protocol to the service manager that started
-// the process, the one behind systemd's Type=notify and Type=notify-reload
-// units. Without $NOTIFY_SOCKET every call is a no-op.
+// notifier speaks sd_notify to the service manager; without $NOTIFY_SOCKET it is a no-op.
 type notifier struct {
 	path    string
-	manager int // pid of the service manager; the parent of a supervised main process
+	manager int
 	log     *slog.Logger
 }
 
 func newNotifier(log *slog.Logger) notifier {
 	n := notifier{path: os.Getenv("NOTIFY_SOCKET"), manager: 1, log: log}
-	// a user manager is not pid 1 and says so
+	// a user manager is not pid 1 and exports MANAGERPID
 	if pid, err := strconv.Atoi(os.Getenv("MANAGERPID")); err == nil {
 		n.manager = pid
 	}
 	return n
 }
 
-// ready reports the process as serving. It also claims the main role when
-// the manager is already its parent; an upgraded child leaves that to adopt.
+// ready reports the process as serving, claiming MAINPID too if already adopted.
 func (n notifier) ready() {
 	if n.adopted() {
 		n.send(mainPID() + "\nREADY=1")
@@ -40,11 +36,8 @@ func (n notifier) ready() {
 	n.send("READY=1")
 }
 
-// adopt claims the main role once the manager has become the parent, which
-// happens when the process that spawned this one exits after a handoff.
-// Claiming it earlier would make systemd supervise a process that is not
-// its child: it then cannot wait for it, and a stop goes straight to
-// SIGKILL. done ends the wait.
+// adopt claims MAINPID once the old process has exited and the manager has
+// become the parent, or gives up when done closes.
 func (n notifier) adopt(done <-chan struct{}) {
 	if n.path == "" || n.adopted() {
 		return
@@ -64,8 +57,7 @@ func (n notifier) adopt(done <-chan struct{}) {
 	}
 }
 
-// reloading opens a reload cycle; Type=notify-reload requires the monotonic
-// timestamp to pair it with the READY=1 that closes it.
+// reloading opens a reload cycle; Type=notify-reload requires MONOTONIC_USEC with it.
 func (n notifier) reloading() {
 	n.send("RELOADING=1\nMONOTONIC_USEC=" + strconv.FormatInt(monotonicUSec(), 10))
 }
@@ -74,8 +66,8 @@ func (n notifier) stopping() {
 	n.send("STOPPING=1")
 }
 
-// adopted reports whether the manager is this process's parent, the only
-// relation under which it supervises a main process properly.
+// adopted reports whether the manager is the parent; systemd cannot wait for a
+// main process that is not its child and would SIGKILL it on stop.
 func (n notifier) adopted() bool {
 	return os.Getppid() == n.manager
 }

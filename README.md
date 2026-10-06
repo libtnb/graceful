@@ -15,23 +15,18 @@ draining, and optional zero-downtime upgrades on SIGHUP via
 ## Features
 
 - **Any component, not just HTTP.** `Add(name, start, stop)` takes a pair of
-  functions: `start` may block for the component's whole life (an accept
-  loop) or return immediately after spawning its own work (a scheduler). A
-  non-nil error from any `start` shuts the whole group down.
+  functions. `start` may block for the component's life or return after
+  spawning its own work; a non-nil error shuts the whole group down.
 - **Listeners built for upgrades.** `Listen(name, addr, srv)` creates the
-  listener inside `Run` — through tableflip when upgrades are enabled — so an
-  upgraded process inherits the socket without dropping connections.
-  `*http.Server` satisfies the `Server` interface directly.
-- **One shutdown story.** A cancelled context, a component failure, or an
-  upgrade handoff all funnel into the same drain: every started component is
-  stopped in reverse registration order, under one shared deadline, and drain
-  failures come back joined onto the returned error.
+  listener inside `Run`, through tableflip when upgrades are enabled, so an
+  upgraded process inherits the socket. `*http.Server` satisfies `Server`.
+- **One shutdown path.** Cancellation, component failure and upgrade handoff
+  all drain the same way: reverse registration order, one shared deadline,
+  drain failures joined onto the returned error.
 - **Zero-downtime upgrades.** `WithUpgrade()` makes SIGHUP re-exec the binary
-  and hand off listeners; it silently falls back to plain listeners on
-  Windows.
-- **systemd aware.** With `NOTIFY_SOCKET` set the group reports `READY=1`,
-  `RELOADING=1`, the upgraded process's `MAINPID=` and `STOPPING=1` by
-  itself, so a `Type=notify-reload` unit gets a synchronous, zero-downtime
+  and hand off listeners; Windows falls back to plain listeners.
+- **systemd aware.** Under `NOTIFY_SOCKET` the group reports its own state, so
+  a `Type=notify-reload` unit gets a synchronous, zero-downtime
   `systemctl reload`.
 - **Structured logging** of every lifecycle event through `log/slog`.
 
@@ -77,9 +72,9 @@ func main() {
 }
 ```
 
-`Run` starts entries in registration order and drains them in reverse: the
-HTTP listener above stops accepting before the scheduler is asked to finish,
-so in-flight requests can still schedule work.
+`Run` starts entries in registration order and drains them in reverse, so the
+listener above stops accepting before the scheduler stops and in-flight
+requests can still schedule work.
 
 | Trigger | Behavior |
 |---|---|
@@ -89,13 +84,12 @@ so in-flight requests can still schedule work.
 
 ## systemd
 
-Nothing to configure on the Go side: when systemd starts the process with
-`NOTIFY_SOCKET` in the environment, the group reports its state over it.
-`READY=1` goes out once every listener accepts, a SIGHUP upgrade is bracketed
-by `RELOADING=1` and the child's `MAINPID=` + `READY=1`, and a requested
-shutdown sends `STOPPING=1`. That is the whole contract of a
-`Type=notify-reload` unit, so `systemctl reload` becomes a zero-downtime
-binary upgrade that returns only once the new process is serving:
+Nothing to configure in Go. With `NOTIFY_SOCKET` set, the group sends
+`READY=1` once every listener accepts, brackets a SIGHUP upgrade with
+`RELOADING=1` and the child's `READY=1` + `MAINPID=`, and sends `STOPPING=1`
+on shutdown. That is the whole `Type=notify-reload` contract, so
+`systemctl reload` becomes a zero-downtime upgrade that returns once the new
+process serves:
 
 ```ini
 [Service]
@@ -105,34 +99,29 @@ ExitType=cgroup
 ExecStart=/opt/app/app
 ```
 
-`NotifyAccess=all` is required: the upgraded process reports before systemd
-knows it as the main one. `ExitType=cgroup` keeps the unit running while the
-old process drains and exits; the new one claims `MAINPID=` only once it has
-been reparented to systemd, because a main process that is not systemd's own
-child cannot be waited for and a stop would escalate straight to SIGKILL.
-`WithUpgrade()` must be on, otherwise the SIGHUP systemd sends on reload just
-terminates the process. Replace the binary on disk before reloading; the
-child is re-executed from the same path.
+`NotifyAccess=all` lets the upgraded process report before systemd knows it
+as the main one. `ExitType=cgroup` keeps the unit up while the old process
+drains and exits, because the child claims `MAINPID=` only after systemd
+adopts it: systemd cannot wait for a main process that is not its child, so a
+stop would escalate straight to SIGKILL. Without `WithUpgrade()` the reload's
+SIGHUP terminates the process. Replace the binary in place before reloading;
+the child re-executes the same path.
 
 ## Design notes
 
 - **`start` errors are fatal, `stop` errors are collected.** A component that
-  cannot run means the process is broken — everything comes down. A component
-  that cannot stop cleanly must not block the rest from draining, so its
-  error is logged and joined onto `Run`'s return value instead.
-- **A scheduler-style `start` that returns nil is a successful launch**, not
-  a failure — only non-nil errors trigger shutdown. This makes `Add` fit both
+  cannot run brings everything down. One that cannot stop must not block the
+  rest, so its error is logged and joined onto `Run`'s result.
+- **A `start` that returns nil is a successful launch**, so `Add` fits both
   blocking accept loops and fire-and-forget starters without adapters.
 - **Registration order is the dependency order.** Register infrastructure
-  first, entry points last; reverse-order draining then closes the front door
-  before the back office.
-- **The caller owns shutdown, the group owns SIGHUP.** Shutdown arrives
-  through the context (`signal.NotifyContext` in main), so the group composes
-  with any cancellation source and tests need no real signals; SIGHUP stays
-  internal because upgrades are the group's own feature.
-- **The group owns lifecycles, not resources.** Database pools, log writers
-  and the like belong to whatever built them (a DI container's cleanup); the
-  group only coordinates starting and stopping.
+  first and entry points last; reverse draining closes the front door before
+  the back office.
+- **The caller owns shutdown, the group owns SIGHUP.** Shutdown arrives through
+  the context, so any cancellation source works and tests need no real
+  signals; SIGHUP stays internal because upgrades are the group's own feature.
+- **The group owns lifecycles, not resources.** Pools, log writers and the like
+  belong to whatever built them; the group only coordinates start and stop.
 
 ## License
 

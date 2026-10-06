@@ -7,8 +7,7 @@ import (
 	"github.com/cloudflare/tableflip"
 )
 
-// upgrader abstracts how listeners are created and how (whether) the process
-// hands off to an upgraded binary.
+// upgrader abstracts listener creation and the handoff to an upgraded binary.
 type upgrader interface {
 	Listen(network, addr string) (net.Listener, error)
 	Ready() error
@@ -19,8 +18,6 @@ type upgrader interface {
 	Stop()
 }
 
-// newUpgrader returns tableflip when upgrades are requested and supported,
-// otherwise plain listeners with no upgrade path.
 func newUpgrader(upgrade bool) (upgrader, error) {
 	if !upgrade || runtime.GOOS == "windows" {
 		return plainUpgrader{}, nil
@@ -38,7 +35,7 @@ func (plainUpgrader) Listen(network, addr string) (net.Listener, error) {
 	return net.Listen(network, addr)
 }
 func (plainUpgrader) Ready() error          { return nil }
-func (plainUpgrader) Exit() <-chan struct{} { return nil } // a nil channel blocks forever
+func (plainUpgrader) Exit() <-chan struct{} { return nil }
 func (plainUpgrader) Upgrade() error        { return nil }
 func (plainUpgrader) CanUpgrade() bool      { return false }
 func (plainUpgrader) Stop()                 {}

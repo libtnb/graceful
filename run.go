@@ -16,11 +16,9 @@ type namedErr struct {
 	err  error
 }
 
-// Run starts every entry in registration order, then blocks until ctx is
-// cancelled, a component fails, or an upgraded process takes over. It drains
-// the started entries in reverse order and returns the failure that caused
-// the shutdown joined with any drain failures; a requested shutdown that
-// drains cleanly returns nil. Call it once.
+// Run starts every entry, blocks until ctx is cancelled, a component fails or
+// an upgraded process takes over, then drains in reverse order and returns the
+// cause joined with any drain failures.
 func (g *Group) Run(ctx context.Context) error {
 	up, err := newUpgrader(g.opts.upgrade)
 	if err != nil {
@@ -31,13 +29,11 @@ func (g *Group) Run(ctx context.Context) error {
 	errCh := make(chan namedErr, len(g.entries))
 	started, err := g.start(up, errCh)
 	if err == nil {
-		// reported before Ready releases the parent, so a reload completes
-		// as soon as the upgraded process serves
+		// before Ready releases the parent, so a reload completes once this process serves
 		g.notify.ready()
 		err = up.Ready()
 	}
 	if err == nil {
-		// an upgraded process claims the main role once the parent is gone
 		done := make(chan struct{})
 		go g.notify.adopt(done)
 		err = g.await(ctx, up, errCh)
@@ -78,11 +74,10 @@ func (g *Group) start(up upgrader, errCh chan<- namedErr) ([]entry, error) {
 	return started, nil
 }
 
-// await blocks until a shutdown trigger and returns its cause: nil for a
-// cancelled context or an upgrade handoff, the component's error otherwise.
-// SIGHUP triggers an upgrade instead of stopping the group.
+// await blocks until shutdown and returns its cause, nil unless a component
+// failed; SIGHUP upgrades instead of returning.
 func (g *Group) await(ctx context.Context, up upgrader, errCh <-chan namedErr) error {
-	var hup chan os.Signal // stays nil without upgrades; nil never receives
+	var hup chan os.Signal // nil without upgrades, so its case never fires
 	if up.CanUpgrade() {
 		hup = make(chan os.Signal, 1)
 		signal.Notify(hup, syscall.SIGHUP)
@@ -108,8 +103,7 @@ func (g *Group) await(ctx context.Context, up upgrader, errCh <-chan namedErr) e
 			g.notify.stopping()
 			return fmt.Errorf("%s: %w", ne.name, ne.err)
 		case <-up.Exit():
-			// the child has reported itself as the main process; a STOPPING
-			// from here would read as the service going down
+			// no STOPPING=1: the service keeps running in the child
 			g.opts.log.Info("upgrade handed off, draining")
 			return nil
 		}

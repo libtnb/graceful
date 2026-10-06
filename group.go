@@ -10,8 +10,7 @@ import (
 	"time"
 )
 
-// Server is the accepting half of an HTTP(ish) server: Serve blocks on the
-// listener until Shutdown drains it. *http.Server satisfies it directly.
+// Server serves a listener until Shutdown drains it; *http.Server satisfies it.
 type Server interface {
 	Serve(ln net.Listener) error
 	Shutdown(ctx context.Context) error
@@ -26,39 +25,37 @@ type options struct {
 // Option configures a Group.
 type Option func(*options)
 
-// WithLogger sets the logger for lifecycle events. Default slog.Default().
+// WithLogger sets the logger for lifecycle events (default slog.Default()).
 func WithLogger(log *slog.Logger) Option {
 	return func(o *options) { o.log = log }
 }
 
-// WithShutdownTimeout bounds the total drain time on shutdown. Default 30s.
+// WithShutdownTimeout bounds the total drain time on shutdown (default 30s).
 func WithShutdownTimeout(d time.Duration) Option {
 	return func(o *options) { o.shutdownTimeout = d }
 }
 
-// WithUpgrade enables zero-downtime binary upgrades on SIGHUP via tableflip.
-// It is a no-op on Windows, where the group falls back to plain listeners.
+// WithUpgrade enables zero-downtime binary upgrades on SIGHUP via tableflip; a no-op on Windows.
 func WithUpgrade() Option {
 	return func(o *options) { o.upgrade = true }
 }
 
-// entry is one registered component, kept in registration order.
 type entry struct {
 	name  string
-	start func() error                    // nil for listeners; run in a goroutine
-	stop  func(ctx context.Context) error // drained in reverse order
-	addr  string                          // non-empty marks a listener entry
+	start func() error // nil for listeners
+	stop  func(ctx context.Context) error
+	addr  string // non-empty marks a listener
 	srv   Server
 }
 
-// Group runs components together. Register with Add and Listen, then call
-// Run once; Group is not safe for concurrent registration.
+// Group runs components together: register with Add and Listen, then call Run once.
 type Group struct {
 	opts    options
 	entries []entry
 	notify  notifier
 }
 
+// New returns a Group configured by opts.
 func New(opts ...Option) *Group {
 	o := options{
 		log:             slog.Default(),
@@ -70,18 +67,15 @@ func New(opts ...Option) *Group {
 	return &Group{opts: o, notify: newNotifier(o.log)}
 }
 
-// Add registers a component. start runs in a goroutine: it may block for the
-// component's whole life (an accept loop) or return nil after spawning its
-// own work (a scheduler); a non-nil error shuts the whole group down. stop
-// runs during shutdown in reverse registration order, sharing the group's
-// shutdown timeout.
+// Add registers a component: start runs in a goroutine and may block or return
+// nil after spawning work, a non-nil error shuts the group down, and stop runs
+// on shutdown in reverse registration order.
 func (g *Group) Add(name string, start func() error, stop func(ctx context.Context) error) {
 	g.entries = append(g.entries, entry{name: name, start: start, stop: stop})
 }
 
-// Listen registers srv to serve on a TCP listener bound to addr. The
-// listener is created by Run — through tableflip under WithUpgrade, so
-// upgraded processes inherit it. http.ErrServerClosed is a clean exit.
+// Listen registers srv on a TCP listener for addr that Run creates, inherited
+// across upgrades under WithUpgrade; http.ErrServerClosed counts as a clean exit.
 func (g *Group) Listen(name, addr string, srv Server) {
 	g.entries = append(g.entries, entry{name: name, addr: addr, srv: srv})
 }

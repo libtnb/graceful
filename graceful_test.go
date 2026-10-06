@@ -16,7 +16,6 @@ import (
 	"time"
 )
 
-// recorder collects stop order across components.
 type recorder struct {
 	mu    sync.Mutex
 	order []string
@@ -46,7 +45,6 @@ func (b *blocker) start() error { <-b.done; return nil }
 
 func (b *blocker) stop(context.Context) error { close(b.done); return nil }
 
-// cancelSoon returns a context that cancels itself shortly after Run starts.
 func cancelSoon(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -180,7 +178,7 @@ func TestRun_WithUpgrade(t *testing.T) {
 
 func TestRun_ReportsToServiceManager(t *testing.T) {
 	manager := notifySocket(t)
-	// the test runner stands in for the service manager that forked us
+	// the test runner plays the manager that forked us
 	t.Setenv("MANAGERPID", strconv.Itoa(os.Getppid()))
 
 	g := New()
@@ -200,7 +198,7 @@ func TestRun_ReportsToServiceManager(t *testing.T) {
 
 func TestRun_LeavesMainPIDToTheParentUntilAdopted(t *testing.T) {
 	manager := notifySocket(t)
-	// a manager that is not our parent: the case of a process an upgrade spawned
+	// a manager that is not our parent, as for a process an upgrade spawned
 	t.Setenv("MANAGERPID", "1")
 	if os.Getppid() == 1 {
 		t.Skip("the test process is a child of pid 1")
@@ -246,15 +244,14 @@ func TestNotifier_ReloadingCarriesMonotonicClock(t *testing.T) {
 	}
 }
 
-// notifySocket stands in for systemd's notification socket and points
-// NOTIFY_SOCKET at it for the rest of the test.
+// notifySocket fakes systemd's notification socket and points NOTIFY_SOCKET at it.
 func notifySocket(t *testing.T) *net.UnixConn {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("unix datagram sockets are not supported on windows")
 	}
 
-	// a short path: unix socket names are capped around a hundred bytes
+	// not t.TempDir(): unix socket paths are capped around a hundred bytes
 	path := filepath.Join(os.TempDir(), fmt.Sprintf("graceful-%d.sock", time.Now().UnixNano()))
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
 	if err != nil {
