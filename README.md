@@ -78,7 +78,7 @@ requests can still schedule work.
 
 | Trigger | Behavior |
 |---|---|
-| ctx cancelled (e.g. SIGINT/SIGTERM via `signal.NotifyContext`) | stop accepting, drain every component, return nil |
+| ctx cancelled (e.g. SIGINT/SIGTERM via `signal.NotifyContext`) | stop accepting, drain every component, return nil (a `*DrainError` if a component failed to stop) |
 | a `start` returns non-nil | drain every component, return `name: err` |
 | SIGHUP (with `WithUpgrade`) | re-exec the binary, hand listeners to the child, drain, return nil |
 

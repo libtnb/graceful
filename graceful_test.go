@@ -105,8 +105,12 @@ func TestRun_DrainFailureIsReturned(t *testing.T) {
 		return errStop
 	})
 
-	if err := g.Run(cancelSoon(t)); !errors.Is(err, errStop) {
+	err := g.Run(cancelSoon(t))
+	if !errors.Is(err, errStop) {
 		t.Fatalf("drain failures should surface from Run, got %v", err)
+	}
+	if _, ok := err.(*DrainError); !ok {
+		t.Fatalf("a requested shutdown with drain failures should return a bare *DrainError, got %T", err)
 	}
 }
 

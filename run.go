@@ -16,6 +16,18 @@ type namedErr struct {
 	err  error
 }
 
+// DrainError reports components that failed to stop. Run returns it on its
+// own when the shutdown itself was requested or an upgrade took over, so a
+// caller can log it and still exit zero: after a handoff the old process's
+// exit status becomes the service's result.
+type DrainError struct {
+	Err error
+}
+
+func (e *DrainError) Error() string { return e.Err.Error() }
+
+func (e *DrainError) Unwrap() error { return e.Err }
+
 // Run starts every entry, blocks until ctx is cancelled, a component fails or
 // an upgraded process takes over, then drains in reverse order and returns the
 // cause joined with any drain failures.
@@ -39,7 +51,14 @@ func (g *Group) Run(ctx context.Context) error {
 		err = g.await(ctx, up, errCh)
 		close(done)
 	}
-	return errors.Join(err, g.drain(started))
+	var drained error
+	if failed := g.drain(started); failed != nil {
+		drained = &DrainError{Err: failed}
+	}
+	if err == nil {
+		return drained
+	}
+	return errors.Join(err, drained)
 }
 
 // start launches the entries and returns the ones that must be drained; a
